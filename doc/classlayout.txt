@@ -108,6 +108,9 @@ With clangd running, the cursor can be on a variable and the plugin resolves
 the underlying type. Without clangd, the cursor must be on the type name
 itself.
 
+The layout is based on the saved file. Unsaved changes won't be
+reflected — save first.
+
 ==============================================================================
 6. COMMANDS                                            *classlayout-commands*
 
