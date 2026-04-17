@@ -185,6 +185,20 @@ function M.extract_class_name(type_str)
   return without_template
 end
 
+function M.resolve_typedef_name(file, line_nr)
+  local ok, lines = pcall(vim.fn.readfile, file)
+  if not ok or not lines then return nil end
+  local depth = 0
+  for i = line_nr, #lines do
+    for _ in lines[i]:gmatch("{") do depth = depth + 1 end
+    for _ in lines[i]:gmatch("}") do depth = depth - 1 end
+    if depth <= 0 then
+      return lines[i]:match("}%s*(%w+)%s*;")
+    end
+  end
+  return nil
+end
+
 function M.show()
   local ft = vim.bo.filetype
   if ft ~= "cpp" and ft ~= "c" then
@@ -237,7 +251,7 @@ function M.show()
   if cached and cached.mtime == mtime then
     output = cached.output
   else
-    local args = { compiler, "-Xclang", "-fdump-record-layouts-complete", "-fsyntax-only" }
+    local args = { compiler, "-Xclang", "-fdump-record-layouts-complete", "-Wpadded", "-fsyntax-only" }
     if ft == "cpp" then
       args[#args + 1] = "-x"
       args[#args + 1] = "c++"
@@ -255,18 +269,38 @@ function M.show()
     end
 
     local result = vim.system(args, { text = true }):wait()
-    output = (result.stdout or "") .. (result.stderr or "")
-    M._dump_cache[real_filepath] = { mtime = mtime, output = output }
+    output = result.stdout or ""
+    M._dump_cache[real_filepath] = { mtime = mtime, output = output, stderr = result.stderr or "" }
   end
 
-  local block = M.parse(output, class_name, full_lsp_type)
+  local block, source_loc = M.parse(output, class_name, full_lsp_type)
 
   if not block then
     vim.notify("ClassLayout: no layout found for '" .. class_name .. "'", vim.log.levels.WARN)
     return
   end
 
-  M.open_float(block, class_name)
+  local warnings = {}
+  local stderr = cached and cached.stderr or M._dump_cache[real_filepath].stderr
+  for line in stderr:gmatch("[^\n]+") do
+    if line:match("%-Wpadded%]") then
+      local matches = source_loc and line:match(source_loc) or line:match(class_name)
+      if matches then
+        local bytes, field = line:match("with (%d+) bytes to align '([^']+)'")
+        if bytes and field then
+          warnings[#warnings + 1] = bytes .. "B padding before '" .. field
+            .. "' — reorder fields by decreasing size to eliminate"
+        else
+          bytes = line:match("with (%d+) bytes to alignment boundary")
+          if bytes then
+            warnings[#warnings + 1] = bytes .. "B trailing padding to meet alignment"
+          end
+        end
+      end
+    end
+  end
+
+  M.open_float(block, class_name, warnings)
 end
 
 function M.parse(output, class_name, full_type_hint)
@@ -293,6 +327,7 @@ function M.parse(output, class_name, full_type_hint)
   local exact_match = nil
   local stripped_match = nil
   local fallback = nil
+  local unnamed_blocks = {}
 
   for _, block in ipairs(blocks) do
     local line = block[1]
@@ -301,23 +336,39 @@ function M.parse(output, class_name, full_type_hint)
       if full_type then
         full_type = full_type:gsub("%s*%(empty%)%s*$", "")
         full_type = full_type:gsub("%s*%(sizeof.*$", "")
-        -- Exact match with full type (including template args)
-        if full_type_hint and full_type == full_type_hint then
-          return block
-        end
-        local without_template = full_type:gsub("<.+>", "")
-        if without_template == class_name then
-          if not full_type_hint then
+
+        local file, line_nr = full_type:match("%(unnamed at (.+):(%d+):%d+%)")
+        if file and line_nr then
+          unnamed_blocks[#unnamed_blocks + 1] = { block = block, file = file, line_nr = tonumber(line_nr) }
+        else
+          -- Exact match with full type (including template args)
+          if full_type_hint and full_type == full_type_hint then
             return block
           end
-          stripped_match = stripped_match or block
-        end
-        if not fallback then
-          local unqualified = without_template:match("::([%w_]+)$") or without_template
-          if unqualified == unqualified_name then
-            fallback = block
+          local without_template = full_type:gsub("<.+>", "")
+          if without_template == class_name then
+            if not full_type_hint then
+              return block
+            end
+            stripped_match = stripped_match or block
+          end
+          if not fallback then
+            local unqualified = without_template:match("::([%w_]+)$") or without_template
+            if unqualified == unqualified_name then
+              fallback = block
+            end
           end
         end
+      end
+    end
+  end
+
+  if not (exact_match or stripped_match or fallback) then
+    for _, entry in ipairs(unnamed_blocks) do
+      local typedef_name = M.resolve_typedef_name(entry.file, entry.line_nr)
+      if typedef_name and (typedef_name == class_name or typedef_name == unqualified_name) then
+        local loc = entry.file .. ":" .. entry.line_nr
+        return entry.block, loc
       end
     end
   end
@@ -325,23 +376,44 @@ function M.parse(output, class_name, full_type_hint)
   return exact_match or stripped_match or fallback
 end
 
-function M.clean(lines)
-  for i, line in ipairs(lines) do
-    -- Strip verbose anonymous type source locations
-    -- e.g. "(anonymous at /usr/bin/../lib64/.../basic_string.h:220:7)" -> "(anonymous)"
-    lines[i] = line:gsub("%(anonymous at [^)]+%)", "(anonymous)")
+--- Strip verbose anonymous type source locations and extract sizeof/align metadata.
+function M.clean(raw_lines, class_name)
+  local lines = {}
+  local sizeof, align
+  for _, line in ipairs(raw_lines) do
+    line = line:gsub("%(anonymous at [^)]+%)", "(anonymous)")
+    line = line:gsub("%(unnamed at [^)]+%)", "(unnamed)")
+    local s, a = line:match("%[sizeof=(%d+).*align=(%d+)")
+    if s then
+      sizeof, align = s, a
+    elseif line:match("^%s*%d+%s*|%s*[%w]+%s+%(unnamed%)") then
+      -- skip redundant top-level unnamed struct line
+    elseif not line:match("^%s*|%s*%[") then
+      lines[#lines + 1] = line
+    end
   end
-  return lines
+  return lines, sizeof, align
 end
 
-function M.open_float(lines, class_name)
-  lines = M.clean(lines)
+function M.open_float(lines, class_name, warnings)
+  local sizeof, align
+  lines, sizeof, align = M.clean(lines, class_name)
 
-  local header = "Class Layout: " .. class_name
-  local separator = string.rep("-", 40)
+  local header = class_name
+  if sizeof then
+    header = header .. " (" .. sizeof .. " bytes, align " .. align .. ")"
+  end
+  local separator = string.rep("-", math.max(#header, 40))
 
   table.insert(lines, 1, header)
   table.insert(lines, 2, separator)
+
+  if warnings and #warnings > 0 then
+    lines[#lines + 1] = separator
+    for _, w in ipairs(warnings) do
+      lines[#lines + 1] = "⚠ " .. w
+    end
+  end
 
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
