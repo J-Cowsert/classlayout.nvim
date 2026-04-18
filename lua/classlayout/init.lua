@@ -65,7 +65,7 @@ function M.extract_flags(command_str)
 	local i = 1
 	local tokens = {} ---@type string[]
 	for token in command_str:gmatch("%S+") do
-		tokens[#tokens + 1] = token
+		table.insert(tokens, token)
 	end
 
 	-- Skip the compiler (first token) and the source file / -o / -c tokens
@@ -73,22 +73,22 @@ function M.extract_flags(command_str)
 	while i <= #tokens do
 		local t = tokens[i]
 		if t:match("^%-D") or t:match("^%-std") then
-			flags[#flags + 1] = t
+			table.insert(flags, t)
 		elseif t:match("^%-I") then
 			if t == "-I" then
 				-- value is next token
 				i = i + 1
 				if tokens[i] then
-					flags[#flags + 1] = "-I" .. tokens[i]
+					table.insert(flags, "-I" .. tokens[i])
 				end
 			else
-				flags[#flags + 1] = t
+				table.insert(flags, t)
 			end
 		elseif t == "-isystem" then
 			i = i + 1
 			if tokens[i] then
-				flags[#flags + 1] = "-isystem"
-				flags[#flags + 1] = tokens[i]
+				table.insert(flags, "-isystem")
+				table.insert(flags, tokens[i])
 			end
 		end
 		i = i + 1
