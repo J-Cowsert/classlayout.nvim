@@ -12,7 +12,7 @@ M.augroup = vim.api.nvim_create_augroup("ClassLayout", { clear = true })
 --- @field compiler? string
 --- @field keymap? string
 
----@return ClassLayoutOpts defaults
+--- @return ClassLayoutOpts defaults
 local function get_defaults()
 	return {
 		keymap = "<leader>cl",
@@ -60,10 +60,10 @@ end
 --- @param command_str string
 --- @return string[] flags
 function M.extract_flags(command_str)
-	local flags = {} ---@type string[]
+	local flags = {} --- @type string[]
 	-- Match flags that take a value either as -Xval or -X val
 	local i = 1
-	local tokens = {} ---@type string[]
+	local tokens = {} --- @type string[]
 	for token in command_str:gmatch("%S+") do
 		table.insert(tokens, token)
 	end
@@ -126,14 +126,14 @@ function M.get_compile_flags(filepath)
 			return {}
 		end
 
-		---@type boolean, { file?: string, command?: string }|nil
+		--- @type boolean, { file?: string, command?: string }|nil
 		local ok, entries = pcall(vim.json.decode, table.concat(content, "\n"))
 		if not (ok and entries) or #entries == 0 then
 			return {}
 		end
 
 		-- Build lookup table: resolved file path -> flags
-		local file_flags = {} ---@type table<string, string[]>
+		local file_flags = {} --- @type table<string, string[]>
 		for _, entry in ipairs(entries) do
 			local resolved = vim.fn.resolve(entry.file or "")
 			file_flags[resolved] = M.extract_flags(entry.command or "")
@@ -207,8 +207,8 @@ function M.show()
 
 	-- Try LSP first to resolve the actual type, fall back to word under cursor
 	local lsp_type = M.get_type_from_lsp()
-	local class_name ---@type string
-	local full_lsp_type ---@type string
+	local class_name --- @type string
+	local full_lsp_type --- @type string
 	if lsp_type then
 		class_name = M.extract_class_name(lsp_type)
 		-- Keep the cleaned full type (with templates) for exact matching
@@ -244,11 +244,11 @@ function M.show()
 	local mtime = stat and stat.mtime.sec or 0
 	local cached = M._dump_cache[real_filepath]
 
-	local output ---@type string
+	local output --- @type string
 	if cached and cached.mtime == mtime then
 		output = cached.output
 	else
-		---@type string[]
+		--- @type string[]
 		local args = { compiler, "-Xclang", "-fdump-record-layouts-complete", "-fsyntax-only" }
 		if ft == "cpp" then
 			table.insert(args, "-x")
