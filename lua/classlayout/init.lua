@@ -139,11 +139,13 @@ function M.get_compile_flags(filepath)
 			file_flags[resolved] = M.extract_flags(entry.command or "")
 		end
 
-		M._cc_cache[real_cc_path] = {
+		cached = {
 			mtime = mtime,
 			file_flags = file_flags,
 			fallback_flags = M.extract_flags(entries[1].command or ""),
 		}
+
+		M._cc_cache[real_cc_path] = cached
 	end
 
 	return cached.file_flags[vim.fn.resolve(filepath)] or cached.fallback_flags
