@@ -21,13 +21,13 @@ function M.setup(opts)
   })
 end
 
---- Walk up from `start_path` looking for compile_commands.json.
---- Returns the path to compile_commands.json or nil.
-function M.find_compile_commands(start_path)
+--- Walk up from `start_path` looking for a file named `name`.
+--- Returns the full path or nil.
+local function find_upward(start_path, name)
   local dir = vim.fn.fnamemodify(start_path, ":h")
   local prev = nil
   while dir and dir ~= prev do
-    local candidate = dir .. "/compile_commands.json"
+    local candidate = dir .. "/" .. name
     if vim.fn.filereadable(candidate) == 1 then
       return candidate
     end
@@ -37,19 +37,18 @@ function M.find_compile_commands(start_path)
   return nil
 end
 
---- Extract compiler flags relevant to layout dumping from a compile_commands.json entry.
+--- Walk up from `start_path` looking for compile_commands.json.
+--- Returns the path to compile_commands.json or nil.
+function M.find_compile_commands(start_path)
+  return find_upward(start_path, "compile_commands.json")
+end
+
+--- Filter a list of compiler argument tokens down to those relevant to layout dumping.
 --- Keeps -I, -D, -std, -isystem flags and drops everything else.
-function M.extract_flags(command_str)
+function M.filter_flags(tokens)
   local flags = {}
   -- Match flags that take a value either as -Xval or -X val
   local i = 1
-  local tokens = {}
-  for token in command_str:gmatch("%S+") do
-    tokens[#tokens + 1] = token
-  end
-
-  -- Skip the compiler (first token) and the source file / -o / -c tokens
-  i = 2
   while i <= #tokens do
     local t = tokens[i]
     if t:match("^%-D") or t:match("^%-std") then
@@ -76,6 +75,18 @@ function M.extract_flags(command_str)
   return flags
 end
 
+--- Extract compiler flags relevant to layout dumping from a compile_commands.json entry.
+--- Keeps -I, -D, -std, -isystem flags and drops everything else.
+function M.extract_flags(command_str)
+  local tokens = {}
+  for token in command_str:gmatch("%S+") do
+    tokens[#tokens + 1] = token
+  end
+  -- Skip the compiler (first token)
+  table.remove(tokens, 1)
+  return M.filter_flags(tokens)
+end
+
 -- Cache: keyed by compile_commands.json path
 -- { path = { mtime = number, file_flags = { [resolved_path] = flags }, fallback_flags = flags } }
 M._cc_cache = {}
@@ -84,18 +95,20 @@ M._cc_cache = {}
 -- { path = { mtime = number, output = string } }
 M._dump_cache = {}
 
---- Get compiler flags from compile_commands.json for the given filepath.
---- For header files (not in compile_commands.json), falls back to flags from any entry in the same project.
-function M.get_compile_flags(filepath)
+--- Look up compiler flags for the given filepath in compile_commands.json.
+--- Returns two values: the flags for the exact entry matching `filepath` (nil if not listed,
+--- e.g. for headers), and fallback flags from the first entry in the file.
+--- Both are nil if no usable compile_commands.json is found.
+function M.get_compile_commands_flags(filepath)
   local cc_path = M.find_compile_commands(filepath)
   if not cc_path then
-    return {}
+    return nil, nil
   end
 
   local real_cc_path = vim.fn.resolve(cc_path)
   local stat = vim.uv.fs_stat(real_cc_path)
   if not stat then
-    return {}
+    return nil, nil
   end
   local mtime = stat.mtime.sec
 
@@ -103,12 +116,12 @@ function M.get_compile_flags(filepath)
   if not cached or cached.mtime ~= mtime then
     local content = vim.fn.readfile(cc_path)
     if not content or #content == 0 then
-      return {}
+      return nil, nil
     end
 
     local ok, entries = pcall(vim.json.decode, table.concat(content, "\n"))
     if not ok or not entries or #entries == 0 then
-      return {}
+      return nil, nil
     end
 
     -- Build lookup table: resolved file path -> flags
@@ -127,7 +140,15 @@ function M.get_compile_flags(filepath)
   end
 
   local real_filepath = vim.fn.resolve(filepath)
-  return cached.file_flags[real_filepath] or cached.fallback_flags
+  return cached.file_flags[real_filepath], cached.fallback_flags
+end
+
+--- Get compiler flags for the given filepath.
+--- Uses the exact compile_commands.json entry for the file, falling back to the first
+--- entry for headers and other files not listed there.
+function M.get_compile_flags(filepath)
+  local exact, fallback = M.get_compile_commands_flags(filepath)
+  return exact or fallback or {}
 end
 
 --- Try to get the type name of the symbol under the cursor via LSP hover.
