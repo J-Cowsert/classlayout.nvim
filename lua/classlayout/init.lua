@@ -43,9 +43,24 @@ function M.find_compile_commands(start_path)
   return find_upward(start_path, "compile_commands.json")
 end
 
+--- Walk up from `start_path` looking for compile_flags.txt.
+--- Returns the path to compile_flags.txt or nil.
+function M.find_compile_flags(start_path)
+  return find_upward(start_path, "compile_flags.txt")
+end
+
+--- Resolve `path` against `base_dir` if it is relative. `base_dir` may be nil.
+local function resolve_include(path, base_dir)
+  if base_dir and not path:match("^/") then
+    return base_dir .. "/" .. path
+  end
+  return path
+end
+
 --- Filter a list of compiler argument tokens down to those relevant to layout dumping.
 --- Keeps -I, -D, -std, -isystem flags and drops everything else.
-function M.filter_flags(tokens)
+--- Relative include paths are resolved against `base_dir` when given.
+function M.filter_flags(tokens, base_dir)
   local flags = {}
   -- Match flags that take a value either as -Xval or -X val
   local i = 1
@@ -58,16 +73,16 @@ function M.filter_flags(tokens)
         -- value is next token
         i = i + 1
         if tokens[i] then
-          flags[#flags + 1] = "-I" .. tokens[i]
+          flags[#flags + 1] = "-I" .. resolve_include(tokens[i], base_dir)
         end
       else
-        flags[#flags + 1] = t
+        flags[#flags + 1] = "-I" .. resolve_include(t:sub(3), base_dir)
       end
     elseif t == "-isystem" then
       i = i + 1
       if tokens[i] then
         flags[#flags + 1] = "-isystem"
-        flags[#flags + 1] = tokens[i]
+        flags[#flags + 1] = resolve_include(tokens[i], base_dir)
       end
     end
     i = i + 1
@@ -90,6 +105,10 @@ end
 -- Cache: keyed by compile_commands.json path
 -- { path = { mtime = number, file_flags = { [resolved_path] = flags }, fallback_flags = flags } }
 M._cc_cache = {}
+
+-- Cache: keyed by compile_flags.txt path
+-- { path = { mtime = number, flags = flags } }
+M._cf_cache = {}
 
 -- Cache: keyed by resolved filepath
 -- { path = { mtime = number, output = string } }
@@ -143,12 +162,52 @@ function M.get_compile_commands_flags(filepath)
   return cached.file_flags[real_filepath], cached.fallback_flags
 end
 
+--- Get compiler flags from compile_flags.txt (one argument per line) for the given filepath.
+--- Relative include paths are resolved against the directory containing compile_flags.txt.
+--- Returns nil if no compile_flags.txt is found.
+function M.get_compile_flags_txt(filepath)
+  local cf_path = M.find_compile_flags(filepath)
+  if not cf_path then
+    return nil
+  end
+
+  local real_cf_path = vim.fn.resolve(cf_path)
+  local stat = vim.uv.fs_stat(real_cf_path)
+  if not stat then
+    return nil
+  end
+  local mtime = stat.mtime.sec
+
+  local cached = M._cf_cache[real_cf_path]
+  if not cached or cached.mtime ~= mtime then
+    local tokens = {}
+    for _, line in ipairs(vim.fn.readfile(cf_path)) do
+      line = vim.trim(line)
+      if line ~= "" and not line:match("^#") then
+        tokens[#tokens + 1] = line
+      end
+    end
+
+    cached = {
+      mtime = mtime,
+      flags = M.filter_flags(tokens, vim.fn.fnamemodify(cf_path, ":h")),
+    }
+    M._cf_cache[real_cf_path] = cached
+  end
+
+  return cached.flags
+end
+
 --- Get compiler flags for the given filepath.
---- Uses the exact compile_commands.json entry for the file, falling back to the first
---- entry for headers and other files not listed there.
+--- Precedence: the exact compile_commands.json entry for the file, then compile_flags.txt,
+--- then (for headers and other files not listed in compile_commands.json) flags from the
+--- first compile_commands.json entry.
 function M.get_compile_flags(filepath)
   local exact, fallback = M.get_compile_commands_flags(filepath)
-  return exact or fallback or {}
+  if exact then
+    return exact
+  end
+  return M.get_compile_flags_txt(filepath) or fallback or {}
 end
 
 --- Try to get the type name of the symbol under the cursor via LSP hover.

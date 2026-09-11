@@ -12,7 +12,7 @@ exactly how the compiler laid it out.
 
 - Works on structs, classes, unions, and STL types
 - Resolves variables to their underlying type via clangd
-- Auto-detects compiler flags from `compile_commands.json`
+- Auto-detects compiler flags from `compile_commands.json` or `compile_flags.txt`
 - Cached — first lookup compiles, subsequent lookups are instant
 
 ## Requirements
