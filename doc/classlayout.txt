@@ -63,6 +63,7 @@ Pass a table to `setup()` to override defaults: >lua
     compiler = "clang",         -- clang or clang++
     args = {},                  -- extra compiler flags
     compile_commands = true,    -- auto-detect flags from compile_commands.json
+                                -- or compile_flags.txt
   })
 <
 
@@ -80,7 +81,8 @@ compiler ~
 args ~
   Default: `{}`
   Extra flags appended to the compiler invocation. These are added after
-  any flags extracted from compile_commands.json, so they can override.
+  any flags extracted from compile_commands.json or compile_flags.txt,
+  so they can override.
   Useful for custom include paths or defines: >lua
 
     args = { "-I/opt/custom/include", "-DNDEBUG" }
@@ -90,10 +92,22 @@ args ~
 compile_commands ~
   Default: `true`
   When enabled, the plugin walks up from the current file to find
-  compile_commands.json and extracts `-I`, `-D`, `-std`, and `-isystem`
-  flags. The result is cached and invalidated when the file's mtime
-  changes. For header files not listed in compile_commands.json, flags
-  from the first entry are used as a fallback.
+  compile_commands.json and/or compile_flags.txt and extracts `-I`, `-D`,
+  `-std`, and `-isystem` flags. Results are cached and invalidated when
+  the mtime of compile_commands.json or compile_flags.txt changes.
+
+  Flags are resolved in this order:
+  1. The compile_commands.json entry for the current file, if listed.
+  2. compile_flags.txt, if found. This is one argument per line, as used
+     by clangd. Blank lines and lines starting with `#` are ignored.
+     Relative include paths are resolved against the directory containing
+     compile_flags.txt.
+  3. Flags from the first compile_commands.json entry, as a last resort
+     for header files and other files not listed there.
+
+  Header-only projects, or projects with headers that need different
+  flags than any listed translation unit, can add a compile_flags.txt
+  alongside (or instead of) compile_commands.json.
 
 ==============================================================================
 5. USAGE                                                  *classlayout-usage*
